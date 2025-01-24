@@ -1,0 +1,11 @@
+.mvenv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.idea/
+*.log
+.env
+*.sqlite3
+.pytest_cache/
+.coverage
