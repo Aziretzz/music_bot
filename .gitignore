@@ -1,11 +1,25 @@
+# Игрорировать виртуальные окружения
+.venv/
 .mvenv/
+
+# Кэшированные файлы Python
 __pycache__/
 *.pyc
 *.pyo
 *.pyd
+
+# Конфигурации IDE (например, PyCharm)
 .idea/
+
+# Логи
 *.log
+
+# Файлы окружения
 .env
+
+# Базы данных
 *.sqlite3
+
+# Файлы тестов
 .pytest_cache/
 .coverage
