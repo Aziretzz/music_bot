@@ -1,26 +1,22 @@
-import logging  # Import the logging module for logging messages
-import sqlite3  # Import the SQLite library for working with SQLite databases
-import os  # Import the OS module for interacting with the operating system
-import yt_dlp  # Import the yt-dlp library for downloading videos and audio from YouTube
-from aiogram import Bot, Dispatcher, executor, types  # Import necessary classes from the aiogram library
-from aiogram.contrib.fsm_storage.memory import MemoryStorage  # Import the class for storing FSM states in memory
+import logging
+import sqlite3
+import os
+import yt_dlp
+from aiogram import Bot, Dispatcher, executor, types
+from aiogram.contrib.fsm_storage.memory import MemoryStorage
 from aiogram.dispatcher import FSMContext
-from aiogram.dispatcher.filters.state import StatesGroup, State  # Import classes for creating states
-from requests import get  # Import the function for sending HTTP requests
+from aiogram.dispatcher.filters.state import StatesGroup, State
 
-logging.basicConfig(level=logging.INFO)  # Configure logging
-
-bot = Bot(token="API_TOKEN")  # Create an instance of the bot
-
-storage = MemoryStorage()  # Create in-memory storage for FSM states
-dp = Dispatcher(bot, storage=storage)  # Create a dispatcher for handling messages
-
-# Create a connection to the SQLite database (or create a new one if it doesn't exist)
+logging.basicConfig(level=logging.INFO)
+bot = Bot(token="Api-Token")
+storage = MemoryStorage()
+dp = Dispatcher(bot, storage=storage)
+print(sqlite3.sqlite_version)
 conn = sqlite3.connect('mp3_db.db')
 c = conn.cursor()
 
 # Create the table if it doesn't exist
-c.execute('''
+c.execute('''   
     CREATE TABLE IF NOT EXISTS music_history (
         id INTEGER PRIMARY KEY,
         user_id TEXT,
@@ -30,77 +26,83 @@ c.execute('''
 ''')
 
 
-# Create a class to collect file names
-class FilenameCollectorPP(yt_dlp.postprocessor.common.PostProcessor):
-    def __init__(self):
-        super(FilenameCollectorPP, self).__init__(None)
+# Updated FilenameCollectorPP to handle no requested_downloads key
+class FilenameCollectorPP(yt_dlp.postprocessor.PostProcessor):
+    def __init__(self, downloader=None):
+        super().__init__(downloader)
         self.filenames = []
 
     def run(self, information):
-        self.filenames.append(information["filepath"])
+        # Check and fetch 'filepath' directly
+        if 'filepath' in information:
+            self.filenames.append(information["filepath"])
+        else:
+            raise Exception("Failed to retrieve file path")
         return [], information
 
 
-# Handler for the '/start' and '/help' commands
 @dp.message_handler(commands=['start', 'help'])
 async def send_welcome(message: types.Message):
     await message.reply("Hello, I can download any track for you👌\nCheck out how to do this in the command menu😊")
 
 
-# Create a class for states
 class Form(StatesGroup):
-    song = State()  # Create a state 'song'
+    song = State()
 
 
-# Handler for the '/download' command
 @dp.message_handler(commands='download')
 async def start_cmd_handler(message: types.Message):
     await message.reply("Please send me the name and artist of the track😄")
-    await Form.song.set()  # Set the user to the 'song' state
+    await Form.song.set()
 
 
-# Handler for messages in the 'song' state
 @dp.message_handler(state=Form.song)
 async def process_name(message: types.Message, state: FSMContext):
     async with state.proxy() as data:
-        data['song'] = message.text  # Save the message text in the state
+        data['song'] = message.text
     await message.reply('Please wait...😴')
-    YDL_OPTIONS = {'format': 'bestaudio/best',
-                   'noplaylist': 'True',
-                   'postprocessors': [{
-                       'key': 'FFmpegExtractAudio',
-                       'preferredcodec': 'mp3',
-                       'preferredquality': '192'
-                   }],
-                   'outtmpl': 'music/%(title)s.%(ext)s',  # Save files in the 'music' folder
-                   }
+
+    YDL_OPTIONS = {
+        'format': 'bestaudio/best',
+        'noplaylist': True,
+        'postprocessors': [{
+            'key': 'FFmpegExtractAudio',
+            'preferredcodec': 'mp3',
+            'preferredquality': '192'
+        }],
+        'paths': {'home': 'music/'},
+        'quiet': True,
+    }
+
     with yt_dlp.YoutubeDL(YDL_OPTIONS) as ydl:
         try:
-            get(data['song'])
-        except:
+            # Use FilenameCollectorPP to get file name
             filename_collector = FilenameCollectorPP()
             ydl.add_post_processor(filename_collector)
+
+            # Search and download the track
             info_dict = ydl.extract_info(f"ytsearch:{data['song']}", download=False)
             if not info_dict['entries']:
                 await message.reply("Your music is so cool that it's not even in our database🤪")
                 return
-            video = ydl.extract_info(f"ytsearch:{data['song']}", download=True)['entries'][0]
+
+            info_dict_download = ydl.extract_info(f"ytsearch:{data['song']}", download=True)
+
+            # Send the downloaded file to the user
             await message.reply_document(open(filename_collector.filenames[0], 'rb'))
-            await message.reply(f'Here is your music, enjoy😋')
+            await message.reply('Here is your music, enjoy😋')
             await state.finish()
 
-            # Save search information in the database
+            # Save record to the database
             c.execute("INSERT INTO music_history (user_id, search_query, file_path) VALUES (?, ?, ?)",
                       (message.from_user.id, data['song'], filename_collector.filenames[0]))
             conn.commit()
 
-        else:
-            video = ydl.extract_info(data['song'], download=True)
+        except Exception as e:
+            logging.error(f"Error while processing download: {e}")
+            await message.reply("Unknown error occurred during download. Please try again later.")
 
-        return filename_collector.filenames[0]
 
-
-# Handler for the '/history' command
 @dp.message_handler(commands=['history'])
 async def show_history(message: types.Message):
     user_id = message.from_user.id
@@ -114,7 +116,6 @@ async def show_history(message: types.Message):
         await message.reply("Your search history is empty.")
 
 
-# Handler for the '/download_from_history' command
 @dp.message_handler(commands=['download_from_history'])
 async def download_from_history(message: types.Message):
     user_id = message.from_user.id
@@ -122,12 +123,14 @@ async def download_from_history(message: types.Message):
     c.execute("SELECT file_path FROM music_history WHERE user_id=?", (user_id,))
     file_paths = c.fetchall()
     for file_path in file_paths:
-        with open(file_path[0], 'rb') as f:
-            await message.reply_document(f)
+        if os.path.exists(file_path[0]):
+            with open(file_path[0], 'rb') as f:
+                await message.reply_document(f)
+        else:
+            await message.reply(f"File {file_path[0]} no longer exists.")
     await message.reply("That's all🥳")
 
 
-# Handler for the '/delete_history' command
 @dp.message_handler(commands=['delete_history'])
 async def delete_history(message: types.Message):
     user_id = message.from_user.id
@@ -147,7 +150,6 @@ async def delete_history(message: types.Message):
 
 if __name__ == '__main__':
     try:
-        executor.start_polling(dp)  # Start the bot
+        executor.start_polling(dp)
     finally:
-        # Close the database connection
-        conn.close()
+        conn.close()  # Close DB connection
